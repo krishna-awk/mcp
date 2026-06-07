@@ -4,6 +4,64 @@ A local MCP server that turns any AI coding tool (Cursor, Claude Code, Antigravi
 
 You bring the LLM. QAForge brings the testing infrastructure.
 
+## 60-second quick start
+
+```bash
+# 1. build
+go build -o C:/tools/qaforge-mcp.exe ./cmd/qaforge-mcp
+
+# 2. attach to Claude Code (one command)
+claude mcp add qaforge -- "C:/tools/qaforge-mcp.exe"
+
+# 3. analyze
+# In Claude Code:
+"   Analyze C:/projects/myapp using QAForge.   "
+
+# Or via CLI (no AI):
+qaforge-mcp analyze -project=C:/projects/myapp
+qaforge-mcp run -project=C:/projects/myapp -no-test   # full pipeline + reports
+```
+
+Open `qa-reports/report.html` for the human view. That's the whole loop.
+
+## Cheat sheet
+
+```bash
+# build & install
+go build -o C:/tools/qaforge-mcp.exe ./cmd/qaforge-mcp
+
+# attach (pick one)
+claude mcp add qaforge -- "C:/tools/qaforge-mcp.exe"                          # Claude Code
+# or edit ~/.cursor/mcp.json, ~/.config/opencode/config.json, etc. (see below)
+
+# analyze (one project)
+qaforge-mcp analyze -project=C:/projects/myapp                  # text
+qaforge-mcp analyze -project=C:/projects/myapp -json            # JSON
+qaforge-mcp analyze -project=C:/projects/myapp -json | jq .apis # pipe to jq
+
+# full autonomous pipeline
+qaforge-mcp run -project=C:/projects/myapp -no-test             # fast, no browser
+qaforge-mcp run -project=C:/projects/myapp                      # runs Playwright too
+qaforge-mcp run -project=C:/projects/myapp -target=py           # Python tests
+qaforge-mcp run -project=C:/projects/myapp -json                # CI-friendly
+
+# subcommands
+qaforge-mcp workflow    # discover workflows
+qaforge-mcp plan        # write test-plan.feature
+qaforge-mcp spec        # write Playwright .spec.ts files
+qaforge-mcp test        # run the generated specs
+qaforge-mcp coverage    # coverage report
+qaforge-mcp watch       # re-run on file changes
+qaforge-mcp init        # scaffold .github/workflows + CLAUDE.md + .cursorrules
+qaforge-mcp version
+
+# credentials (env vars, no hardcoding)
+set QA_BASE_URL=http://localhost:3000
+set QA_USER=alice@test.com
+set QA_PASSWORD=secret
+set QA_API_TOKEN=
+```
+
 ## Why
 
 Most MCP servers expose raw primitives (filesystem, git, Playwright). QAForge exposes **high-level QA operations** so the AI can reason about test strategy, not infrastructure plumbing.
@@ -164,6 +222,55 @@ Static binary, no runtime, no cgo (pure-Go SQLite via `modernc.org/sqlite`).
 claude mcp add qaforge -- "C:/tools/qaforge-mcp.exe"
 ```
 
+Verify with `/mcp` in Claude Code — you should see `qaforge` listed with 10 tools.
+
+## Attach to OpenCode
+
+`~/.config/opencode/config.json` (or `<project>/opencode.json`):
+
+```json
+{
+  "mcp": {
+    "qaforge": {
+      "type": "local",
+      "command": ["C:/tools/qaforge-mcp.exe"]
+    }
+  }
+}
+```
+
+## Attach to Gemini CLI
+
+`~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "qaforge": { "command": "C:/tools/qaforge-mcp.exe" }
+  }
+}
+```
+
+## Attach to Cline / Roo (VS Code)
+
+Settings → MCP Servers → Add Server:
+- **Name:** `qaforge`
+- **Command:** `C:\tools\qaforge-mcp.exe`
+- **Transport:** `stdio`
+- **Args:** *(leave empty)*
+
+## Attach to Antigravity (Google)
+
+Project-level `.idx/mcp.json` (or `~/.gemini/antigravity/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "qaforge": { "command": "C:/tools/qaforge-mcp.exe" }
+  }
+}
+```
+
 ## Attach to any MCP client
 
 Any client that can spawn a process and speak JSON-RPC over stdio works. The server uses the official `github.com/modelcontextprotocol/go-sdk` and the standard newline-delimited JSON transport.
@@ -180,6 +287,60 @@ Any client that can spawn a process and speak JSON-RPC over stdio works. The ser
 ```
 
 Claude will chain the tools and produce a working test suite.
+
+## Real analyze output
+
+On a Next.js + Express + OpenAPI + JWT project, `qaforge-mcp analyze` returns:
+
+```bash
+$ qaforge-mcp analyze -project=C:/projects/myapp
+Framework: node
+Pages:     12
+APIs:      23
+Forms:     4
+```
+
+```bash
+$ qaforge-mcp analyze -project=C:/projects/myapp -json | jq '{framework, pages: .pages | length, apis: .apis | length, forms: .forms | length, auth}'
+{
+  "framework": "node",
+  "pages": 12,
+  "apis": 23,
+  "forms": 4,
+  "auth": {
+    "loginForms": [{ "action": "/api/login", "fields": ["email", "password"], "isAuth": true }],
+    "hasOAuth": false,
+    "hasJWT": true,
+    "hasAPIKey": true,
+    "hasSession": true,
+    "envVars": ["QA_BASE_URL", "QA_USER", "QA_PASSWORD", "QA_API_TOKEN"]
+  }
+}
+```
+
+Same call via AI in Claude Code:
+
+```
+You:   Analyze C:/projects/myapp using QAForge.
+AI:    [calls analyze_application with project path]
+       Framework: node
+       Pages: 12  (Next.js App Router + dynamic routes)
+       APIs: 23   (8 from OpenAPI, 15 from Express regex)
+       Forms: 4   (2 login, 1 signup, 1 contact)
+
+       Auth detected:
+       - Login forms: 2 (email+password)
+       - JWT: yes (jsonwebtoken.verify)
+       - API key: yes (x-api-key header)
+       - Session: yes (express-session)
+       - OAuth: no (no source references found)
+
+       You:   Now discover workflows.
+       AI:    [calls discover_workflows]
+              Found 4 workflows: signup, login, contact, checkout
+```
+
+Use the JSON output for scripting, the AI for reasoning, the text output for humans.
 
 ## Storage
 
