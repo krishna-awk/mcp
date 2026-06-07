@@ -1,0 +1,14 @@
+# Build artifacts
+*.exe
+*.test
+*.out
+*.log
+
+# Editor
+.vscode/
+.idea/
+
+# Local
+.env
+artifacts/*
+!artifacts/.gitkeep
