@@ -95,17 +95,22 @@ Override with `QAFORGE_STORE=/path/to/store.db`.
 ## Architecture
 
 ```
-cmd/qaforge-mcp/main.go      entry point, wires everything
-internal/db/                 SQLite (modernc.org/sqlite, pure Go)
-internal/scanner/            analyze_application, discover_api_endpoints
-internal/workflow/           discover_workflows, capture_application_map
-internal/testplan/           generate_test_plan
-internal/playwright/         run_playwright_test, compare_screenshots
-internal/report/             generate_bug_report
-internal/coverage/           calculate_coverage
-internal/verify/             verify_database_state
-internal/tools/              MCP tool registration
-artifacts/                   generated reports, screenshots, traces
+cmd/qaforge-mcp/
+  main.go                     entry point, CLI dispatcher, MCP server
+  watch.go                    watch mode + init (scaffold templates)
+internal/
+  db/                         SQLite (modernc.org/sqlite, pure Go)
+  scanner/                    analyze_application, discover_api_endpoints
+  workflow/                   discover_workflows, capture_application_map
+  testplan/                   generate_test_plan
+  specgen/                    generate Playwright .spec.ts files
+  pipeline/                   full autonomous run (analyze -> spec -> test -> coverage)
+  playwright/                 run_playwright_test, compare_screenshots
+  report/                     generate_bug_report
+  coverage/                   calculate_coverage
+  verify/                     verify_database_state
+  tools/                      MCP tool registration
+artifacts/                    generated reports, screenshots, traces
 ```
 
 ## SQLite Schema
@@ -125,9 +130,184 @@ See `internal/db/schema.sql`.
 ## Roadmap
 
 - [ ] Persist scanned projects into SQLite (currently scanner is in-memory)
-- [ ] Auto-generate Playwright test code from test plan
+- [x] Auto-generate Playwright test code from test plan (`spec` / `run`)
 - [ ] Pixel-diff library for `compare_screenshots`
 - [ ] Network traffic capture for `discover_api_endpoints`
 - [ ] Real `verify_database_state` (snapshot tables before/after)
 - [ ] HTML coverage report export
 - [ ] Cross-platform release pipeline (Windows, macOS, Linux)
+
+---
+
+## Two ways to use QAForge
+
+| Mode | Triggered by | AI required? | Best for |
+|---|---|---|---|
+| **MCP server** | AI tool spawns it | Yes | Interactive sessions, exploration |
+| **CLI** | Shell, CI, hooks, watch | No | Automation, scheduled runs |
+
+The same Go binary does both. With no args → MCP server. With a subcommand → CLI.
+
+## CLI
+
+```bash
+qaforge-mcp <command> [flags]
+```
+
+| Command | What it does |
+|---|---|
+| `analyze` | Scan a project, print pages/APIs/forms |
+| `workflow` | Discover user workflows |
+| `plan` | Generate a Gherkin test plan |
+| `spec` | Generate Playwright `.spec.ts` files |
+| `test` | Run all generated specs |
+| `coverage` | Print coverage report |
+| `run` | Full pipeline: analyze -> spec -> test -> report -> coverage |
+| `watch` | Re-run pipeline when project files change |
+| `init` | Install hooks, configs, system prompts |
+| `version` | Print version |
+
+Common flags: `-project <path>`, `-out <dir>`, `-tests <dir>`, `-base <url>`, `-json`, `-no-test`.
+
+Examples:
+
+```bash
+qaforge-mcp run -project=./myapp
+qaforge-mcp analyze -project=./myapp -json
+qaforge-mcp watch -project=./myapp
+qaforge-mcp run -project=./myapp -no-test    # fast, no browser
+```
+
+## Automation without an AI
+
+### One-shot, fully autonomous
+
+```bash
+qaforge-mcp init -project=./myapp   # one-time: installs everything
+qaforge-mcp run -project=./myapp    # one command, full pipeline
+```
+
+`init` creates `.github/workflows/qaforge.yml`, `CLAUDE.md`, `.cursorrules`, `playwright.qaforge.config.ts`, pre-commit hook script.
+
+### File-watch mode (dev loop)
+
+```bash
+qaforge-mcp watch -project=./myapp
+```
+
+Runs the full pipeline on every relevant file change (debounced 500ms). No human instruction needed.
+
+### GitHub Actions (PR + schedule + push)
+
+`init` installs `.github/workflows/qaforge.yml` that:
+- runs on push, PR, and nightly cron
+- installs Playwright
+- runs the full pipeline
+- uploads `qa-reports/` artifact
+- comments coverage delta on the PR
+
+### Pre-commit hook (local safety net)
+
+`init` installs `.git/hooks/pre-commit` that runs `qaforge-mcp run -no-test` before every commit.
+
+### Direct CI call (no MCP, no AI)
+
+```yaml
+# .github/workflows/qa.yml
+- run: qaforge-mcp run -project=. -json | tee qa-summary.json
+```
+
+The binary is self-contained: no AI, no MCP, no server, no service. Just download and run.
+
+---
+
+## Master Prompts (AI mode)
+
+Once QAForge MCP is attached, paste any of these into your AI tool.
+
+### Master prompt (full autonomous, one shot)
+
+Drop this as the **first message** in any project:
+
+```
+You are a senior QA engineer. Use the QAForge MCP tools to fully
+test this application at <absolute path>.
+
+Execute these steps in order, don't ask for confirmation between them:
+
+1. analyze_application       -> map the app (pages, routes, APIs, forms)
+2. discover_workflows        -> infer user journeys
+3. generate_test_plan        -> produce a Gherkin test plan
+4. For each workflow, generate a Playwright spec file in ./tests/qaforge/
+   using the discovered routes, APIs, and forms. Save each spec.
+5. run_playwright_test       -> execute every spec you created
+6. For any failed test, call generate_bug_report with the failure
+   context. Save reports to ./qa-reports/
+7. calculate_coverage        -> final coverage report
+
+Stop only if a step fails irrecoverably. Report the final summary.
+```
+
+### Step-by-step (controlled)
+
+```
+Let's test this app at <path>. Start with analyze_application
+and explain what you found before moving on.
+```
+
+Then after each step, ask the AI to proceed.
+
+### Per-task quick prompts
+
+| Task | Prompt |
+|---|---|
+| Greenfield scan | "Use QAForge to analyze <path>, summarize the app, list top 5 user workflows, propose what to test first." |
+| Add regression | "Use QAForge on <path>: find untested workflows, generate Playwright tests for the 3 most critical, run them, report." |
+| Debug a bug | "Use QAForge capture_application_map on <path>. Then generate_bug_report for: <bug>. Save to ./qa-reports/bug-NNN.md" |
+| Pre-release | "Run calculate_coverage on <path>. For anything below 80%, generate tests, run them, produce a release-readiness report." |
+| CI integration | "Add a GitHub Actions workflow that runs QAForge on every PR: analyze -> test -> bug report -> coverage -> comment PR." |
+
+### Make it stick to every conversation
+
+Save the master prompt in a project file the AI auto-reads.
+
+**`CLAUDE.md`** (Claude Code reads this automatically):
+
+```markdown
+# QA Instructions
+When the user says "test this app" or "run QA", use QAForge MCP:
+1. analyze_application
+2. discover_workflows
+3. generate_test_plan
+4. Generate Playwright specs in ./tests/qaforge/
+5. run_playwright_test
+6. generate_bug_report on failures
+7. calculate_coverage
+
+Save reports to ./qa-reports/ and screenshots to ./qa-reports/screenshots/.
+Never run destructive commands without confirmation.
+```
+
+**`.cursorrules`** (Cursor reads this):
+
+```
+For any QA task, use the QAForge MCP tools. Default workflow:
+analyze -> discover_workflows -> generate_test_plan -> run tests -> bug reports -> coverage.
+Save artifacts to ./qa-reports/.
+```
+
+`qaforge-mcp init` writes both files for you.
+
+### What "any app" looks like in practice
+
+| App type | QAForge finds |
+|---|---|
+| Next.js / React | Routes from `app/`, `pages/`; forms in components |
+| Express / NestJS / Fastify | Routes from `app.get(...)`, `router.post(...)` |
+| Django / Flask / FastAPI | Routes from `urls.py`, `@app.route`, `@app.get` |
+| OpenAPI / Swagger | Endpoints from spec file |
+| Static HTML | Forms from `<form>` tags + field names |
+| Mixed | Combines all sources, dedupes, ranks by confidence |
+
+The AI picks the right tool output to build Playwright specs that POST to the right endpoints, fill the right fields, and assert the right outcomes.
+

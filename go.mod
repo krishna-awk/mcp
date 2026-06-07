@@ -3,6 +3,7 @@ module github.com/qaforge/mcp
 go 1.25.0
 
 require (
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	modernc.org/sqlite v1.52.0
 )
