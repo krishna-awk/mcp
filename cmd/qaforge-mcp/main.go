@@ -136,6 +136,7 @@ type commonFlags struct {
 	base    string
 	jsonOut bool
 	noTest  bool
+	target  string
 }
 
 func parseCommon(name string, args []string) (*commonFlags, *flag.FlagSet) {
@@ -147,6 +148,7 @@ func parseCommon(name string, args []string) (*commonFlags, *flag.FlagSet) {
 	fs.StringVar(&cf.base, "base", "", "base URL for browser tests")
 	fs.BoolVar(&cf.jsonOut, "json", false, "machine-readable output")
 	fs.BoolVar(&cf.noTest, "no-test", false, "skip running tests")
+	fs.StringVar(&cf.target, "target", "ts", "spec target language: ts (Playwright TypeScript) or py (Playwright Python)")
 	_ = fs.Parse(args)
 	if cf.project == "" {
 		cf.project = "."
@@ -221,7 +223,7 @@ func specCmd(args []string) error {
 	if testsDir == "" {
 		testsDir = filepath.Join(cf.project, "tests", "qaforge")
 	}
-	specs, err := specgen.Generate(a, wfs, testsDir)
+	specs, err := specgen.Generate(a, wfs, testsDir, specgen.Target(cf.target))
 	if err != nil {
 		return err
 	}
@@ -238,9 +240,17 @@ func testCmd(args []string) error {
 	if testsDir == "" {
 		testsDir = filepath.Join(cf.project, "tests", "qaforge")
 	}
-	matches, err := filepath.Glob(filepath.Join(testsDir, "*.spec.ts"))
-	if err != nil {
-		return err
+	patterns := []string{
+		filepath.Join(testsDir, "*.spec.ts"),
+		filepath.Join(testsDir, "*_spec.py"),
+	}
+	matches := []string{}
+	for _, p := range patterns {
+		m, err := filepath.Glob(p)
+		if err != nil {
+			return err
+		}
+		matches = append(matches, m...)
 	}
 	if len(matches) == 0 {
 		fmt.Printf("No specs found in %s\n", testsDir)
@@ -292,6 +302,7 @@ func runCmd(args []string) error {
 		BaseURL:     cf.base,
 		RunTests:    !cf.noTest,
 		JSON:        cf.jsonOut,
+		Target:      specgen.Target(cf.target),
 	})
 	return err
 }

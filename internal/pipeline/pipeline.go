@@ -23,6 +23,7 @@ type Options struct {
 	BaseURL     string
 	RunTests    bool
 	JSON        bool
+	Target      specgen.Target
 }
 
 type Result struct {
@@ -38,6 +39,9 @@ type Result struct {
 	TestRuns   []*playwright.RunResult `json:"testRuns,omitempty"`
 	BugReports []string                `json:"bugReports,omitempty"`
 	Coverage   coverage.Coverage       `json:"coverage"`
+	Auth       scanner.AuthInfo        `json:"auth"`
+	Gaps       []string                `json:"gaps"`
+	Target     string                  `json:"target,omitempty"`
 }
 
 func Run(opts Options) (*Result, error) {
@@ -46,6 +50,9 @@ func Run(opts Options) (*Result, error) {
 	}
 	if opts.TestsDir == "" {
 		opts.TestsDir = filepath.Join(opts.ProjectPath, "tests", "qaforge")
+	}
+	if opts.Target == "" {
+		opts.Target = specgen.TargetTS
 	}
 	if err := os.MkdirAll(opts.OutDir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir out: %w", err)
@@ -57,6 +64,7 @@ func Run(opts Options) (*Result, error) {
 	started := time.Now().UTC()
 	res := &Result{
 		Project:   opts.ProjectPath,
+		Target:    string(opts.Target),
 		StartedAt: started.Format(time.RFC3339),
 	}
 
@@ -68,6 +76,7 @@ func Run(opts Options) (*Result, error) {
 	res.Pages = len(analyze.Pages)
 	res.APIs = len(analyze.APIs)
 	res.Forms = len(analyze.Forms)
+	res.Auth = analyze.Auth
 
 	wfs := workflow.Discover(analyze)
 	res.Workflows = len(wfs)
@@ -78,7 +87,7 @@ func Run(opts Options) (*Result, error) {
 		return nil, fmt.Errorf("write plan: %w", err)
 	}
 
-	specs, err := specgen.Generate(analyze, wfs, opts.TestsDir)
+	specs, err := specgen.Generate(analyze, wfs, opts.TestsDir, opts.Target)
 	if err != nil {
 		return nil, fmt.Errorf("specgen: %w", err)
 	}
@@ -119,23 +128,46 @@ func Run(opts Options) (*Result, error) {
 	)
 	res.Coverage = c
 
+	res.Gaps = report.InferGaps(analyze, report.Summary{
+		Project: res.Project, Framework: res.Framework, Pages: res.Pages,
+		APIs: res.APIs, Forms: res.Forms, Workflows: res.Workflows,
+		Coverage: res.Coverage, Auth: res.Auth,
+	})
+
 	res.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 
-	summary, _ := json.MarshalIndent(res, "", "  ")
+	sum := report.Summary{
+		Project: res.Project, Framework: res.Framework, StartedAt: res.StartedAt, FinishedAt: res.FinishedAt,
+		Pages: res.Pages, APIs: res.APIs, Forms: res.Forms, Workflows: res.Workflows,
+		Specs: res.Specs, BugReports: res.BugReports, Coverage: res.Coverage,
+		Auth: res.Auth, Gaps: res.Gaps, Target: res.Target,
+	}
+	summary, _ := json.MarshalIndent(sum, "", "  ")
 	_ = os.WriteFile(filepath.Join(opts.OutDir, "summary.json"), summary, 0o644)
+
+	if _, err := report.RenderMarkdown(sum, opts.OutDir); err != nil {
+		return res, fmt.Errorf("markdown: %w", err)
+	}
+	if _, err := report.RenderHTML(sum, opts.OutDir); err != nil {
+		return res, fmt.Errorf("html: %w", err)
+	}
 
 	if !opts.JSON {
 		fmt.Printf("Project:      %s\n", res.Project)
 		fmt.Printf("Framework:    %s\n", res.Framework)
+		fmt.Printf("Target:       %s\n", res.Target)
 		fmt.Printf("Pages:        %d\n", res.Pages)
 		fmt.Printf("APIs:         %d\n", res.APIs)
 		fmt.Printf("Forms:        %d\n", res.Forms)
 		fmt.Printf("Workflows:    %d\n", res.Workflows)
 		fmt.Printf("Specs:        %d\n", len(res.Specs))
 		fmt.Printf("Bug reports:  %d\n", len(res.BugReports))
+		fmt.Printf("Login forms:  %d\n", len(res.Auth.LoginForms))
+		fmt.Printf("OAuth:        %v\n", res.Auth.HasOAuth)
 		fmt.Printf("Page cov:     %.1f%%\n", res.Coverage.PageCoverage)
 		fmt.Printf("Workflow cov: %.1f%%\n", res.Coverage.WorkflowCoverage)
 		fmt.Printf("Reports:      %s\n", opts.OutDir)
+		fmt.Printf("HTML report:  %s\n", filepath.Join(opts.OutDir, "report.html"))
 	} else {
 		fmt.Println(string(summary))
 	}

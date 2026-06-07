@@ -29,14 +29,27 @@ type Form struct {
 	Method   string   `json:"method"`
 	Fields   []string `json:"fields"`
 	FilePath string   `json:"filePath"`
+	IsAuth   bool     `json:"isAuth,omitempty"`
+	AuthKind string   `json:"authKind,omitempty"`
+}
+
+type AuthInfo struct {
+	LoginForms   []Form `json:"loginForms"`
+	HasOAuth     bool   `json:"hasOAuth"`
+	HasJWT       bool   `json:"hasJWT"`
+	HasAPIKey    bool   `json:"hasAPIKey"`
+	HasSession   bool   `json:"hasSession"`
+	OAuthHints   []string `json:"oauthHints,omitempty"`
+	EnvVars      []string `json:"envVars"`
 }
 
 type AnalyzeResult struct {
-	ProjectPath string `json:"projectPath"`
-	Framework   string `json:"framework"`
-	Pages       []Page `json:"pages"`
-	APIs        []API  `json:"apis"`
-	Forms       []Form `json:"forms"`
+	ProjectPath string   `json:"projectPath"`
+	Framework   string   `json:"framework"`
+	Pages       []Page   `json:"pages"`
+	APIs        []API    `json:"apis"`
+	Forms       []Form   `json:"forms"`
+	Auth        AuthInfo `json:"auth"`
 }
 
 var (
@@ -52,6 +65,11 @@ var (
 	inputRe       = regexp.MustCompile(`(?i)<input\b[^>]*?\bname\s*=\s*["']([^"']+)["']`)
 	textareaRe    = regexp.MustCompile(`(?i)<textarea\b[^>]*?\bname\s*=\s*["']([^"']+)["']`)
 	selectRe      = regexp.MustCompile(`(?i)<select\b[^>]*?\bname\s*=\s*["']([^"']+)["']`)
+	passwordInput = regexp.MustCompile(`(?i)<input\b[^>]*?\btype\s*=\s*["']password["']`)
+	oauthRe       = regexp.MustCompile(`(?i)(google|github|facebook|twitter|apple|okta|auth0|azure[_-]?ad|keycloak)\s*(\.|_)?\s*(oauth|sign[_-]?in|login|sso)`)
+	jwtRe         = regexp.MustCompile(`(?i)(jsonwebtoken|jwt\.verify|jwt\.sign|Bearer\s+[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.)`)
+	apikeyRe      = regexp.MustCompile(`(?i)(api[_-]?key|x-api-key|x-api-token)`)
+	sessionRe     = regexp.MustCompile(`(?i)(express-session|req\.session|flask\.session|django\.contrib\.sessions)`)
 )
 
 func Analyze(projectPath string) (*AnalyzeResult, error) {
@@ -69,6 +87,7 @@ func Analyze(projectPath string) (*AnalyzeResult, error) {
 		Pages:       []Page{},
 		APIs:        []API{},
 		Forms:       []Form{},
+		Auth:        AuthInfo{EnvVars: []string{"QA_BASE_URL", "QA_USER", "QA_PASSWORD", "QA_API_TOKEN"}},
 	}
 
 	if err := filepath.WalkDir(abs, func(p string, d os.DirEntry, walkErr error) error {
@@ -125,6 +144,7 @@ func Analyze(projectPath string) (*AnalyzeResult, error) {
 			if forms := parseForms(p); len(forms) > 0 {
 				for i := range forms {
 					forms[i].FilePath = rel
+					tagFormsAsAuth(&forms[i], res)
 				}
 				res.Forms = append(res.Forms, forms...)
 			}
@@ -133,7 +153,68 @@ func Analyze(projectPath string) (*AnalyzeResult, error) {
 	}); err != nil {
 		return nil, fmt.Errorf("walk: %w", err)
 	}
+
+	detectAuthPatterns(abs, res)
 	return res, nil
+}
+
+func tagFormsAsAuth(f *Form, res *AnalyzeResult) {
+	hasPassword := false
+	hasUser := false
+	for _, field := range f.Fields {
+		low := strings.ToLower(field)
+		if low == "password" || low == "passwd" || low == "pwd" || strings.Contains(low, "password") {
+			hasPassword = true
+		}
+		if low == "email" || low == "username" || low == "user" || low == "login" || low == "phone" || strings.Contains(low, "email") {
+			hasUser = true
+		}
+	}
+	if hasPassword && hasUser {
+		f.IsAuth = true
+		f.AuthKind = "password"
+		res.Auth.LoginForms = append(res.Auth.LoginForms, *f)
+	}
+}
+
+func detectAuthPatterns(root string, res *AnalyzeResult) {
+	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			if d != nil && d.IsDir() {
+				name := d.Name()
+				if name == "node_modules" || name == ".git" || name == "dist" || name == "build" || name == "venv" || name == "__pycache__" {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		data, rerr := os.ReadFile(p)
+		if rerr != nil {
+			return nil
+		}
+		src := string(data)
+		if oauthRe.MatchString(src) {
+			res.Auth.HasOAuth = true
+			for _, m := range oauthRe.FindAllString(src, -1) {
+				provider := strings.SplitN(m, ".", 2)[0]
+				provider = strings.SplitN(provider, "_", 2)[0]
+				provider = strings.TrimSpace(provider)
+				if provider != "" {
+					res.Auth.OAuthHints = append(res.Auth.OAuthHints, provider)
+				}
+			}
+		}
+		if jwtRe.MatchString(src) {
+			res.Auth.HasJWT = true
+		}
+		if apikeyRe.MatchString(src) {
+			res.Auth.HasAPIKey = true
+		}
+		if sessionRe.MatchString(src) {
+			res.Auth.HasSession = true
+		}
+		return nil
+	})
 }
 
 func detectFramework(root string) string {

@@ -113,6 +113,8 @@ func scaffoldProject(project string) error {
 		filepath.Join(abs, "qa-reports", ".gitkeep"):              "",
 		filepath.Join(abs, "tests", "qaforge", ".gitkeep"):         "",
 		filepath.Join(abs, "playwright.qaforge.config.ts"):         playwrightConfigTS,
+		filepath.Join(abs, "pytest.qaforge.ini"):                   pytestINI,
+		filepath.Join(abs, ".env.qaforge.example"):                 envExample,
 		filepath.Join(abs, ".github", "workflows", "qaforge.yml"):  githubActionYML,
 		filepath.Join(abs, "scripts", "qa-pre-commit.sh"):          preCommitSh,
 		filepath.Join(abs, "CLAUDE.md"):                            claudeMD,
@@ -195,19 +197,9 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const path = 'qa-reports/summary.json';
-            if (!fs.existsSync(path)) return;
-            const s = JSON.parse(fs.readFileSync(path, 'utf8'));
-            const body = [
-              '## QAForge Report',
-              '',
-              '- Framework: ' + s.framework,
-              '- Pages: ' + s.pages + ', APIs: ' + s.apis + ', Forms: ' + s.forms,
-              '- Workflows: ' + s.workflows + ', Specs: ' + s.specs.length,
-              '- Page coverage: ' + s.coverage.pageCoverage.toFixed(1) + '%',
-              '- Workflow coverage: ' + s.coverage.workflowCoverage.toFixed(1) + '%',
-              '- Bug reports: ' + s.bugReports.length,
-            ].join('\\n');
+            const mdPath = 'qa-reports/summary.md';
+            if (!fs.existsSync(mdPath)) return;
+            const body = fs.readFileSync(mdPath, 'utf8');
             github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -224,6 +216,29 @@ const preCommitSh = `#!/bin/sh
 set -e
 cd "$(git rev-parse --show-toplevel)"
 qaforge-mcp run -project=. -no-test
+`
+
+const envExample = `# QAForge environment variables.
+# Copy to .env.qaforge (which is gitignored) and fill in real values.
+# DO NOT commit real credentials.
+
+# Target application
+QA_BASE_URL=http://localhost:3000
+
+# Form login (basic auth / username + password)
+QA_USER=alice@test.com
+QA_PASSWORD=changeme
+
+# API auth (bearer token / API key)
+QA_API_TOKEN=
+`
+
+const pytestINI = `[pytest]
+testpaths = tests/qaforge
+python_files = *_spec.py
+python_classes = Test*
+python_functions = test_*
+addopts = -v --tb=short
 `
 
 const claudeMD = `# QA Instructions
